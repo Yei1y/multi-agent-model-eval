@@ -1,4 +1,9 @@
-"""Reporter: renders the final selection memo."""
+"""Reporter: renders the final selection memo deterministically.
+
+The report is intentionally template-based rather than LLM-written: it keeps
+tables and numbers exactly aligned with the evaluation artifacts, and it avoids
+an extra API call. The other four agents still do the reasoning.
+"""
 
 from __future__ import annotations
 
@@ -9,15 +14,15 @@ from .base import BaseAgent
 
 class ReporterAgent(BaseAgent):
     name = "reporter"
-    system_prompt = (
-        "你是选型报告撰写人。根据场景、评测计划和分析结果，写一份中文 Markdown 报告，"
-        "必须包含：结论与推荐、模型汇总表、维度得分表、主要失败聚类、权衡与风险、"
-        "方法与局限、复现命令。输出 JSON：{\"report_markdown\": str}。只输出 JSON。"
-    )
 
     def run(self, payload: dict[str, Any]) -> dict[str, Any]:
-        result = super().run(payload)
-        markdown = result.get("report_markdown")
-        if not isinstance(markdown, str) or len(markdown.strip()) < 50:
-            raise ValueError("reporter output must contain a non-trivial report_markdown")
+        from ..report import render_report
+
+        markdown = render_report(
+            scenario=payload["scenario"],
+            plan=payload["plan"],
+            analysis=payload["analysis"],
+            run_id=payload["run_id"],
+            mode=payload.get("mode", "mock"),
+        )
         return {"report_markdown": markdown}

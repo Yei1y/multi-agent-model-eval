@@ -60,8 +60,11 @@ def render_report(
     lines.append(header)
     lines.append("| --- | ---: | ---: | ---: | ---: | :---: |")
     for row in model_rows:
+        pass_rate = float(row["pass_rate"])
+        if pass_rate > 1.0:
+            pass_rate /= 100.0
         lines.append(
-            f"| {row['model']} | {_fmt(row['overall'])} | {row['pass_rate'] * 100:.1f}% | "
+            f"| {row['model']} | {_fmt(row['overall'])} | {pass_rate * 100:.1f}% | "
             f"{row['latency_ms']} | {row['cost_per_1k']:.3f} | "
             f"{'是' if row['meets_constraints'] else '否'} |"
         )
@@ -100,14 +103,23 @@ def render_report(
         "- 本报告由 Planner → Case Designer → Evaluator → Analyst → Reporter "
         "五个 Agent 顺序协作生成，每一步的输入/输出/耗时记录在 `task_ledger.jsonl`。"
     )
-    lines.append(
-        "- 当前为 mock 模式：候选模型的画像与分数是**合成数据**，只用于演示流水线，"
-        "**不代表任何真实模型的性能**；真实结论必须用 `--mode real` 重新评测。"
-    )
-    lines.append(
-        "- 评测采用规则化的 1–5 分打分；真实模式可切换为 LLM-as-judge，但仍需人工抽检与"
-        "标注校准，避免位置偏差与自洽偏差。"
-    )
+    if mode == "mock":
+        lines.append(
+            "- 当前为 mock 模式：候选模型的画像与分数是**合成数据**，只用于演示流水线，"
+            "**不代表任何真实模型的性能**；真实结论必须用 `--mode real` 重新评测。"
+        )
+        lines.append(
+            "- 评测采用规则化的 1–5 分打分；真实模式可切换为 LLM-as-judge，但仍需人工抽检与"
+            "标注校准，避免位置偏差与自洽偏差。"
+        )
+    else:
+        lines.append(
+            "- 当前为 real 模式：分数由真实 API 按维度打分；模型延迟与成本字段是配置值/调用日志，"
+            "**实际账单以服务商控制台为准**。"
+        )
+        lines.append(
+            "- LLM-as-judge 存在位置偏差与自洽偏差，需人工抽检；本报告是选型初筛，不是采购依据。"
+        )
     lines.append(
         f"- 样本量为 {n_cases} 条用例，不足以覆盖长尾；结论应作为选型初筛，而不是最终采购依据。"
     )
@@ -118,7 +130,7 @@ def render_report(
     lines.append(
         "python scripts/run_demo.py --scenario data/scenarios/"
         + str(scenario["name"]).replace("-", "_")
-        + ".yaml --mode mock"
+        + f".yaml --mode {mode}"
     )
     lines.append("```")
     lines.append("")

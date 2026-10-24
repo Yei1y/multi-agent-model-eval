@@ -63,13 +63,14 @@ load scenario
 ```text
 runs/<run_id>/
 ├── run.json             # 场景、plan、cases、evaluations、analysis 全量快照
-├── report.md            # 中文选型报告（Reporter 产出）
+├── report.md            # 中文选型报告（Reporter 用模板渲染）
 ├── summary.csv          # 模型级汇总：综合分/维度分/通过率/成本/延迟/约束
 ├── evaluations.csv      # 用例 × 模型明细：每维度分、加权分、是否过线
-└── task_ledger.jsonl    # 五步台账
+├── task_ledger.jsonl    # 五步台账
+└── llm_usage.json       # 真实模式逐次 token/耗时（mock 模式为空）
 ```
 
-`docs/assets/model_scores.png` 由 `src/charts.py` 生成，固定路径覆盖更新，方便 README 引用；历史 run 的原始数据不受影响。
+`docs/assets/model_scores.png` 由 `src/charts.py` 生成，固定路径覆盖更新，方便 README 引用；历史 run 的原始数据不受影响。真实运行建议用 `--chart runs/real_smoke_chart.png`，避免覆盖 mock 图。Reporter 用模板渲染而不是再调一次模型，保证表格数字与 CSV 一致，也减少一次 API 费用。
 
 ## 6. mock / real 双模式
 
@@ -86,7 +87,8 @@ scenario ───► │ BaseLLM 接口 │ ───► Agent.run
 
 - `MockLLM` 为每个 Agent 维护独立 `random.Random(seed + index)`，避免不同步骤互相影响随机序列；同一 seed 的输出可逐字节复现。
 - `MockLLM.structured()` 不调用网络，按 Agent 名分派到 `src/mock_engine.py` 的确定性函数。
-- `OpenAICompatibleLLM` 用标准库 `urllib`，不额外依赖 SDK；`temperature=0.1`、`response_format={"type":"json_object"}`，最多重试 3 次（2 次重试）。
+- `OpenAICompatibleLLM` 用标准库 `urllib`，不额外依赖 SDK；`temperature=0.1`、`response_format={"type":"json_object"}`、`max_tokens=8192`，最多重试 3 次（2 次重试）。超时默认 180 s，并捕获 `ConnectionError` / `RemoteDisconnected` 后重试。
+- 真实 smoke（2026-10-24）：火山方舟 `doubao-seed-2-1-lite`，1 模型 × 8 条用例，9,055 tokens，46.7 s。火山方舟可设 `LLM_THINKING=disabled` 关闭思考，避免单次调用超过 60 s；不设时该模型会返回 `reasoning_content`，延迟与 token 都会明显上升。
 
 ## 7. 设计取舍
 
@@ -114,7 +116,7 @@ scenario ───► │ BaseLLM 接口 │ ───► Agent.run
 
 **新增 Agent**：继承 `BaseAgent`，设置 `name` 与 `system_prompt`，在 `src/agents/__init__.py` 导出，并在 `Orchestrator.run()` 插入一步；同时在 `_summarize_step()` 加摘要分支、在 `MockLLM.structured()` 加 mock 分派（若需要离线跑）。
 
-**接真实模型**：`src/llm.py::build_llm("real", scenario)` 读取 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`；端点需兼容 `/chat/completions` 与 JSON 输出。首次接入建议先用一条用例验证返回结构，再跑全量。
+**接真实模型**：`src/llm.py::build_llm("real", scenario)` 读取 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL`，可选 `LLM_THINKING`；端点需兼容 `/chat/completions` 与 JSON 输出。首次接入建议先用一条用例验证返回结构，再跑 8–12 条 smoke；成本与账单以服务商控制台为准。
 
 ## 9. 与 Magentic-One 的差异
 
@@ -135,5 +137,7 @@ scenario ───► │ BaseLLM 接口 │ ───► Agent.run
 | `plan dimension weights must sum to 1.0` | YAML 权重没归一化 | 调整权重或改 `PlannerAgent` 的归一化逻辑 |
 | `sum(category_mix) must equal n_cases` | 用例配比与总数不一致 | 改 YAML 的 `category_mix` 或 `n_cases` |
 | `real mode requires LLM_BASE_URL...` | 环境变量缺失 | 设三个 env，或改用 `--mode mock` |
+| `Remote end closed connection` / 超时 | 模型思考时间长、连接被远端重置 | 设 `LLM_THINKING=disabled`；超时已设 180 s；代码会重试 2 次 |
 | 真实模式 JSON 解析失败 | 端点不支持 `response_format`，或返回带 Markdown 围栏 | 先删 `response_format`，在 prompt 中强调「只输出 JSON」；查看 `task_ledger.jsonl` 定位步骤 |
+| 报告通过率显示 `10000%` | LLM 把通过率返回成 0–100 而不是 0–1 | `AnalystAgent._normalize_units` 已归一化；新增单位时保持该契约 |
 | 图表中文乱码 | matplotlib 未配置中文字体 | 当前图表用英文标签；如需中文，设置 `font.sans-serif` 为 `SimHei` |

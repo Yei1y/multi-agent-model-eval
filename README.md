@@ -1,6 +1,6 @@
 # 企业选大模型，应该只看榜单吗？
 
-**一个 5 Agent 协作的模型选型评测工作流：3 个候选模型 × 24 条用例 × 5 个维度，mock 模式无需 API key**
+**一个 5 Agent 协作的模型选型评测工作流：3 个候选模型 × 24 条用例 × 5 个维度，mock 模式无需 API key；另附火山方舟真实 API smoke**
 
 ---
 
@@ -8,7 +8,7 @@
 
 > 用 Planner → Case Designer → Evaluator → Analyst → Reporter 五个 Agent，把「业务场景 → 评测计划 → 用例 → 逐条打分 → 失败归因 → 选型报告」串成一条可复现流水线。在电商客服 mock 场景中，综合分最高的 **mock-quality（86.1）** 并不满足 **2000 ms / 0.010 元每千 token** 的延迟与成本约束，最终推荐 **mock-balanced（83.7）**；低成本 **mock-fast** 的通过率只有 **62.5%**，失败集中在隐私、价格承诺与合规等安全与边界用例。换一份 YAML 即可切到金融客服场景，推荐仍为 mock-balanced（85.8），但更严的 1500 ms / 0.008 约束把 mock-quality 排除得更彻底。
 >
-> **重要限定**：以上分数全部来自 mock 模式，是 YAML 中 `profile` 与固定随机种子生成的**合成数据**，不代表豆包、DeepSeek、GPT 或任何真实模型的性能。真实结论必须用 `--mode real` 重新评测。
+> **重要限定**：以上分数全部来自 mock 模式，是 YAML 中 `profile` 与固定随机种子生成的**合成数据**，不代表豆包、DeepSeek、GPT 或任何真实模型的性能。另有一次**单模型、8 条用例的真实 API smoke**（火山方舟 `doubao-seed-2-1-lite`，9,055 tokens，46.7 s，综合 83.0），它只验证端到端调用，不是横向 benchmark；详见 [`results.md`](results.md)。
 
 数字出处：[`results.md`](results.md)。原始 CSV 在本地运行目录 `runs/<run_id>/` 下生成（已 gitignore，不随仓库分发）。
 
@@ -80,7 +80,7 @@
 ### 3.3 mock / real 双模式
 
 - **mock（默认）**：`MockLLM` 根据 YAML 中的 `profile` 与固定 seed 生成确定性输出。无需 API key，适合演示、CI 与结构验证。所有分数都是合成的。
-- **real**：`OpenAICompatibleLLM` 调用任意 OpenAI-compatible `/chat/completions` 端点（火山方舟、DeepSeek、vLLM 等），要求 JSON 输出，失败重试 2 次。配置见 [`六、复现指南`](#六复现指南)。本机没有 API key，**真实模式尚未端到端验证**。
+- **real**：`OpenAICompatibleLLM` 调用任意 OpenAI-compatible `/chat/completions` 端点（火山方舟、DeepSeek、vLLM 等），要求 JSON 输出，失败重试 2 次。已用火山方舟 `doubao-seed-2-1-lite` 跑通 **1 模型 × 8 条用例**的 smoke（9,055 tokens，46.7 s）；多模型/全量真实评测尚未做。配置见 [`六、复现指南`](#六复现指南)。
 
 ### 3.4 数据流
 
@@ -143,7 +143,22 @@ python scripts/run_demo.py --scenario data/scenarios/finance_customer_service.ya
 
 - 固定 seed（电商 42、金融 43）；同一 seed 两次运行，`overall` 完全一致（测试断言）。
 - 每次运行生成独立 `runs/<run_id>/`，不覆盖历史结果。
-- `results.md` 记录了两组运行的命令、数字与结论，可直接对照 CSV 核验。
+- `results.md` 记录了两组 mock + 一组 real smoke 的命令、数字与结论，可直接对照 CSV 核验。
+
+### 4.4 真实 API smoke（火山方舟，1 模型 × 8 条）
+
+2026-10-24 用火山方舟 `doubao-seed-2-1-lite` 跑通 `--mode real`：Planner / Case Designer / Evaluator / Analyst 四次真实调用，Reporter 用模板渲染（不再额外调用模型）。
+
+| 模型 | 综合分（0–100） | 通过率 | 准确性 | 安全性 | 有用性 | 简洁性 | 成本效率 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| doubao-seed-2-1-lite | 83.0 | 100.0% | 4.25 | 5.00 | 4.00 | 4.38 | 3.00 |
+
+![真实 API smoke 的维度得分](docs/assets/model_scores_real.png)
+
+- 8 条用例（normal / edge / adversarial / multi_turn 各 2 条），1 个模型，5 个维度。
+- **9,055 tokens**（prompt 6,551 / completion 2,504），4 次调用总耗时 **46.7 s**；逐次记录在 `runs/<run_id>/llm_usage.json`。
+- 这是**冒烟验证**，不是多模型横向 benchmark；模型延迟/成本字段仍是 YAML 占位值，实际账单以火山方舟控制台为准。
+- 首次尝试在 Case Designer 60 s 超时后 `RemoteDisconnected`；已把超时调到 180 s、补 `ConnectionError` 重试，并用 `thinking=disabled` 稳定到约 47 s。
 
 ## 五、项目结构
 
@@ -158,13 +173,15 @@ multi-agent-model-eval/
 ├── data/
 │   └── scenarios/
 │       ├── ecommerce_customer_service.yaml
-│       └── finance_customer_service.yaml
+│       ├── finance_customer_service.yaml
+│       └── ecommerce_smoke.yaml   # 真实 API smoke（1 模型 × 8 条）
 ├── docs/
 │   ├── architecture.md           # 角色、编排、台账、扩展方式
 │   ├── upstream.md               # 上游项目、借鉴点与改造声明
 │   └── assets/
-│       └── model_scores.png      # README 引用图（运行生成）
-├── runs/                         # 运行产物（gitignored，保留 .gitkeep）
+│       ├── model_scores.png      # mock 评分图（README 引用）
+│       └── model_scores_real.png # 真实 API smoke 评分图
+├── runs/                         # 运行产物（gitignored；含 report/CSV/llm_usage.json）
 ├── scripts/
 │   └── run_demo.py               # CLI 入口
 ├── src/
@@ -204,7 +221,7 @@ python -m unittest discover -s tests -v
 
 > Windows 终端如果中文输出乱码，先执行 `chcp 65001`，或改用 Windows Terminal。
 
-**输出**：每次运行创建 `runs/<run_id>/`，包含 `report.md`、`run.json`、`summary.csv`、`evaluations.csv`、`task_ledger.jsonl`；同时更新 `docs/assets/model_scores.png`。单次 mock 运行为秒级，5 项测试约 3 秒。
+**输出**：每次运行创建 `runs/<run_id>/`，包含 `report.md`、`run.json`、`summary.csv`、`evaluations.csv`、`task_ledger.jsonl`、`llm_usage.json`；mock 运行同时更新 `docs/assets/model_scores.png`。单次 mock 运行为秒级，5 项测试约 3 秒。真实运行建议用 `--chart runs/real_smoke_chart.png`，避免覆盖 README 的 mock 图。
 
 **接入真实模型**（可选，需 API key）：
 
@@ -213,7 +230,8 @@ python -m unittest discover -s tests -v
 $env:LLM_BASE_URL = "https://your-endpoint/v1"
 $env:LLM_API_KEY = "your-key"
 $env:LLM_MODEL = "your-model-id"
-python scripts/run_demo.py --scenario data/scenarios/ecommerce_customer_service.yaml --mode real
+$env:LLM_THINKING = "disabled"   # 可选；火山方舟豆包可关闭思考，降低延迟与费用
+python scripts/run_demo.py --scenario data/scenarios/ecommerce_smoke.yaml --mode real --chart runs/real_smoke_chart.png
 ```
 
 ```bash
@@ -221,10 +239,11 @@ python scripts/run_demo.py --scenario data/scenarios/ecommerce_customer_service.
 export LLM_BASE_URL="https://your-endpoint/v1"
 export LLM_API_KEY="your-key"
 export LLM_MODEL="your-model-id"
-python scripts/run_demo.py --mode real
+export LLM_THINKING="disabled"
+python scripts/run_demo.py --scenario data/scenarios/ecommerce_smoke.yaml --mode real --chart runs/real_smoke_chart.png
 ```
 
-真实模式会把每个 Agent 的 payload 发给模型并要求 JSON 输出。不同端点对 `response_format` 的支持不一致；若端点报错，可先删掉该字段，改用提示词约束 JSON，并在 `src/llm.py` 中保留重试日志。**本机没有 key，这条路径尚未验证**，首次接入时建议先用一条用例跑通，再扩到全量。
+真实模式会把每个 Agent 的 payload 发给模型并要求 JSON 输出。已用火山方舟 `doubao-seed-2-1-lite` 跑通 1 模型 × 8 条 smoke（9,055 tokens，46.7 s；见 [`results.md`](results.md)），但**多模型/全量真实评测尚未做**。不同端点对 `response_format` 的支持不一致；若端点报错，可先删掉该字段，改用提示词约束 JSON，并在 `src/llm.py` 中保留重试日志。首次接入建议先用一条用例跑通，再扩到 8–12 条。
 
 ## 七、这个项目体现了哪些能力
 
@@ -232,7 +251,7 @@ python scripts/run_demo.py --mode real
 | --- | --- | --- |
 | Multi-Agent 编排 | 5 个角色、顺序编排、任务台账、任一步失败即记录并终止 | `src/orchestrator.py`、`src/agents/` |
 | 评测设计 | 场景化维度与权重、四类用例、通过线、延迟/成本约束 | `data/scenarios/*.yaml`、`src/mock_engine.py` |
-| LLM 应用 | mock/real 双 provider、JSON 结构化输出、重试 | `src/llm.py` |
+| LLM 应用 | mock/real 双 provider、JSON 结构化输出、重试、token/耗时记录 | `src/llm.py` |
 | 工程化 | YAML 配置、CLI、CSV/JSON/Markdown 落盘、固定 seed、单元测试 | `scripts/`、`tests/` |
 | 业务转译 | 约束下的推荐、成本/延迟权衡、可解释报告 | `src/report.py`、`runs/<id>/report.md` |
 | 可复现 | 每次运行独立目录、`results.md`、同 seed 断言 | `results.md`、`tests/test_pipeline.py` |
@@ -240,10 +259,10 @@ python scripts/run_demo.py --mode real
 ## 八、局限与已知问题
 
 1. **mock 分数是合成的**：`profile` 是人为设定，只验证流水线，不代表任何真实模型。不要把这里的 86.1 / 83.7 当成 model benchmark。
-2. **样本小**：电商 24 条、金融 16 条，只覆盖常见咨询与对抗类型，长尾与多语言场景不足。
-3. **规则打分，没有人工校准**：mock 的 1–5 分由 profile + 难度 + 噪声生成；真实模式即使换成 LLM-as-judge，也需要人工抽检与标注校准，避免位置偏差与自洽偏差。
-4. **真实模式未验证**：本机无 API key，`OpenAICompatibleLLM` 的端到端行为（尤其是 `response_format` 兼容性）尚未验证。
-5. **成本/延迟是配置值**：不是实测的 P50/P99，也没有考虑并发、缓存与限流。
+2. **样本小**：mock 电商 24 条、金融 16 条；真实 smoke 只有 1 模型 × 8 条。长尾、多语言与多模型横向对比都不足。
+3. **打分没有人工校准**：mock 的 1–5 分由 profile + 难度 + 噪声生成；真实模式已用 LLM-as-judge，但仍需人工抽检与标注校准，避免位置偏差与自洽偏差。
+4. **真实模式只做了 smoke**：已用火山方舟 `doubao-seed-2-1-lite` 跑通 1 模型 × 8 条（9,055 tokens，46.7 s）；尚未做多模型/全量真实评测，且报告里的延迟/成本字段仍是 YAML 占位值，实际账单以控制台为准。
+5. **成本/延迟是配置值**：不是实测的 P50/P99，也没有考虑并发、缓存与限流；真实调用耗时见 `llm_usage.json`，金额见服务商账单。
 6. **顺序编排，无动态重规划**：与 Magentic-One 的完整 orchestrator 相比，缺少「根据中间结果选择下一个 Agent」和并行分支；这是为可复现性做的简化。
 7. **没有统计显著性**：单次运行、无置信区间；样本扩大后应报告均值与区间。
 8. **失败聚类按标签计数**：不是因果归因，标签由用例作者预先定义。
@@ -259,7 +278,7 @@ python scripts/run_demo.py --mode real
 
 ## 十、AI 使用声明
 
-本项目的代码骨架、部分实现与文档初稿由 AI 助手辅助生成和调试；场景定义、评测维度与权重、通过线、结果解读由作者确认。mock 数据为合成数据，真实 API 未接入。所有数字均可在 `runs/` 与 `results.md` 中回溯；若发现代码与文档不一致，以代码和运行产物为准。
+本项目的代码骨架、部分实现与文档初稿由 AI 助手辅助生成和调试；场景定义、评测维度与权重、通过线、结果解读由作者确认。mock 数据为合成数据；真实模式已用火山方舟 `doubao-seed-2-1-lite` 跑通 8 条 smoke（9,055 tokens，46.7 s），但未做多模型/全量真实评测。所有数字均可在 `runs/` 与 `results.md` 中回溯；若发现代码与文档不一致，以代码和运行产物为准。
 
 ## 参考
 

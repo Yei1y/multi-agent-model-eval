@@ -119,7 +119,12 @@ class Orchestrator:
             "evaluations_csv": "evaluations.csv",
             "summary_csv": "summary.csv",
             "task_ledger": "task_ledger.jsonl",
+            "llm_usage": "llm_usage.json",
         }
+        usage = getattr(self.llm, "usage", [])
+        (run_dir / "llm_usage.json").write_text(
+            json.dumps(usage, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         (run_dir / "run.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
         )

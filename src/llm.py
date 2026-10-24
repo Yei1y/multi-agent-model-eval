@@ -12,6 +12,7 @@ Two implementations share one interface:
 from __future__ import annotations
 
 import json
+import http.client
 import os
 import random
 import time
@@ -28,6 +29,9 @@ class LLMError(RuntimeError):
 
 
 class BaseLLM:
+    def __init__(self) -> None:
+        self.usage: list[dict[str, Any]] = []
+
     def structured(self, agent: str, system: str, payload: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -38,6 +42,7 @@ class MockLLM(BaseLLM):
     _AGENTS = ("planner", "case_designer", "evaluator", "analyst", "reporter")
 
     def __init__(self, seed: int = 42) -> None:
+        super().__init__()
         self.seed = seed
         self._rngs = {name: random.Random(seed + index) for index, name in enumerate(self._AGENTS)}
 
@@ -90,9 +95,12 @@ class OpenAICompatibleLLM(BaseLLM):
         base_url: str,
         api_key: str,
         model: str,
-        timeout: int = 60,
+        timeout: int = 180,
         max_retries: int = 2,
+        max_tokens: int = 8192,
+        thinking: str | None = None,
     ) -> None:
+        super().__init__()
         if not base_url or not api_key or not model:
             raise ValueError("base_url, api_key and model are required for real mode")
         self.base_url = base_url.rstrip("/")
@@ -100,6 +108,8 @@ class OpenAICompatibleLLM(BaseLLM):
         self.model = model
         self.timeout = timeout
         self.max_retries = max_retries
+        self.max_tokens = max_tokens
+        self.thinking = thinking
 
     def _post(self, body: dict[str, Any]) -> dict[str, Any]:
         url = f"{self.base_url}/chat/completions"
@@ -120,6 +130,7 @@ class OpenAICompatibleLLM(BaseLLM):
         body = {
             "model": self.model,
             "temperature": 0.1,
+            "max_tokens": self.max_tokens,
             "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system},
@@ -129,17 +140,46 @@ class OpenAICompatibleLLM(BaseLLM):
                 },
             ],
         }
+        if self.thinking:
+            body["thinking"] = {"type": self.thinking}
         last_error: Exception | None = None
         for attempt in range(self.max_retries + 1):
+            started = time.perf_counter()
             try:
                 response = self._post(body)
+                duration_ms = round((time.perf_counter() - started) * 1000, 1)
+                usage = response.get("usage") or {}
+                self.usage.append(
+                    {
+                        "agent": agent,
+                        "model": self.model,
+                        "attempt": attempt + 1,
+                        "prompt_tokens": int(usage.get("prompt_tokens", 0)),
+                        "completion_tokens": int(usage.get("completion_tokens", 0)),
+                        "total_tokens": int(
+                            usage.get(
+                                "total_tokens",
+                                int(usage.get("prompt_tokens", 0))
+                                + int(usage.get("completion_tokens", 0)),
+                            )
+                        ),
+                        "duration_ms": duration_ms,
+                    }
+                )
                 content = response["choices"][0]["message"]["content"].strip()
                 if content.startswith("```"):
                     content = content.strip("`")
                     if content.lower().startswith("json"):
                         content = content[4:]
                 return json.loads(content)
-            except (KeyError, json.JSONDecodeError, urllib.error.URLError, TimeoutError) as exc:
+            except (
+                KeyError,
+                json.JSONDecodeError,
+                urllib.error.URLError,
+                TimeoutError,
+                ConnectionError,
+                http.client.RemoteDisconnected,
+            ) as exc:
                 last_error = exc
                 if attempt < self.max_retries:
                     time.sleep(1.5 * (attempt + 1))
@@ -159,4 +199,7 @@ def build_llm(mode: str, scenario: Scenario) -> BaseLLM:
             "real mode requires LLM_BASE_URL, LLM_API_KEY and LLM_MODEL; "
             "use --mode mock to run without a key"
         )
-    return OpenAICompatibleLLM(base_url=base_url, api_key=api_key, model=model)
+    thinking = os.getenv("LLM_THINKING", "").strip() or None
+    return OpenAICompatibleLLM(
+        base_url=base_url, api_key=api_key, model=model, thinking=thinking
+    )
