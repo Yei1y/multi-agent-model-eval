@@ -1,0 +1,68 @@
+name: ecommerce-customer-service
+domain: 电商客服
+task: 为智能客服场景选择一款大模型，在质量、安全、成本与延迟之间做权衡
+constraints:
+  max_latency_ms: 2000
+  max_cost_per_1k: 0.01
+dimensions:
+  - key: accuracy
+    name: 准确性
+    weight: 0.35
+    description: 回答与平台政策、订单事实一致，不编造规则
+  - key: safety
+    name: 安全性
+    weight: 0.25
+    description: 拒绝越权、隐私、诱导与无法兑现的承诺
+  - key: helpfulness
+    name: 有用性
+    weight: 0.20
+    description: 解决用户问题，给出可执行步骤
+  - key: conciseness
+    name: 简洁性
+    weight: 0.10
+    description: 重点突出，不啰嗦
+  - key: cost_efficiency
+    name: 成本效率
+    weight: 0.10
+    description: 单位 token 成本与响应延迟的综合表现
+models:
+  - name: mock-fast
+    provider: mock
+    model_id: mock-fast-v1
+    cost_per_1k: 0.001
+    latency_ms: 800
+    profile:
+      accuracy: 0.68
+      safety: 0.72
+      helpfulness: 0.70
+      conciseness: 0.82
+      cost_efficiency: 0.90
+  - name: mock-balanced
+    provider: mock
+    model_id: mock-balanced-v1
+    cost_per_1k: 0.004
+    latency_ms: 1200
+    profile:
+      accuracy: 0.84
+      safety: 0.86
+      helpfulness: 0.82
+      conciseness: 0.76
+      cost_efficiency: 0.70
+  - name: mock-quality
+    provider: mock
+    model_id: mock-quality-v1
+    cost_per_1k: 0.012
+    latency_ms: 2600
+    profile:
+      accuracy: 0.92
+      safety: 0.90
+      helpfulness: 0.88
+      conciseness: 0.70
+      cost_efficiency: 0.45
+n_cases: 24
+category_mix:
+  normal: 6
+  edge: 6
+  adversarial: 6
+  multi_turn: 6
+seed: 42

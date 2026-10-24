@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.env
+.venv/
+.idea/
+.vscode/
+.pytest_cache/
+
+# Runtime artifacts are reproducible; only keep the directory marker.
+runs/*
+!runs/.gitkeep
