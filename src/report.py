@@ -9,12 +9,19 @@ def _fmt(value: float, digits: int = 1) -> str:
     return f"{value:.{digits}f}"
 
 
+def _excerpt(text: str, limit: int = 120) -> str:
+    compact = " ".join(str(text).split())
+    return compact if len(compact) <= limit else compact[:limit] + "…"
+
+
 def render_report(
     scenario: dict[str, Any],
     plan: dict[str, Any],
     analysis: dict[str, Any],
     run_id: str,
     mode: str = "mock",
+    answers: list[dict[str, Any]] | None = None,
+    measurements: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     dimensions = plan["dimensions"]
     model_rows = analysis["summaries"]
@@ -23,6 +30,8 @@ def render_report(
     max_latency = float(constraints.get("max_latency_ms", float("nan")))
     max_cost = float(constraints.get("max_cost_per_1k", float("nan")))
     n_cases = sum(int(v) for v in plan["case_mix"].values())
+    answers = answers or []
+    measurements = measurements or {}
 
     lines: list[str] = []
     lines.append(f"# 模型选型评测报告：{scenario['domain']}")
@@ -52,20 +61,53 @@ def render_report(
         + f"{float(plan['pass_threshold']):.1f}/5"
     )
     lines.append("")
+    lines.append("## 证据来源")
+    lines.append("")
+    if answers:
+        providers = sorted({str(row.get("provider", "unknown")) for row in answers})
+        measured = sum(1 for row in answers if float(row.get("latency_ms") or 0) > 0)
+        lines.append(
+            f"- 候选模型实际回答：{len(answers)} 条（来源：{'、'.join(providers)}），"
+            "每条用例每个模型各一条，明细见 `answers.csv`"
+        )
+        if measured:
+            lines.append(
+                f"- 其中 {measured} 条带实测耗时；延迟列取这些调用的平均值，"
+                "token 列取响应 `usage` 的平均值"
+            )
+        else:
+            lines.append("- 本次没有实测耗时与 token：延迟列是场景配置值，token 列为 0")
+        if any(row.get("priced") for row in model_rows):
+            lines.append(
+                "- 成本列由 YAML 单价（元/千 token）× 实测 token 计算，"
+                "单价是运维配置值，不是官方实时报价"
+            )
+        else:
+            lines.append(
+                "- 未配置输入/输出单价：成本列显示配置值或 0，**不能据此比较价格**；"
+                "在场景 YAML 填 `price_input_per_1k` / `price_output_per_1k` 即可重算"
+            )
+    else:
+        lines.append("- 本次没有采集候选模型的回答，分数只反映 judge 的先验印象")
+    lines.append("")
     lines.append("## 模型汇总")
     lines.append("")
     header = (
-        "| 模型 | 综合分（0–100） | 通过率 | 延迟（ms） | 成本（/千 token） | 满足约束 |"
+        "| 模型 | 综合分（0–100） | 通过率 | 延迟（ms） | 成本（元/千 token） | "
+        "单条成本（元） | 平均 token/条 | 满足约束 |"
     )
     lines.append(header)
-    lines.append("| --- | ---: | ---: | ---: | ---: | :---: |")
+    lines.append("| --- | ---: | ---: | ---: | ---: | ---: | ---: | :---: |")
     for row in model_rows:
         pass_rate = float(row["pass_rate"])
         if pass_rate > 1.0:
             pass_rate /= 100.0
+        cost_per_case = row.get("cost_per_case")
+        cost_cell = f"{float(cost_per_case):.4f}" if cost_per_case is not None else "—"
         lines.append(
             f"| {row['model']} | {_fmt(row['overall'])} | {pass_rate * 100:.1f}% | "
-            f"{row['latency_ms']} | {row['cost_per_1k']:.3f} | "
+            f"{row['latency_ms']} | {row['cost_per_1k']:.3f} | {cost_cell} | "
+            f"{int(row.get('tokens_per_case') or 0)} | "
             f"{'是' if row['meets_constraints'] else '否'} |"
         )
     lines.append("")
@@ -79,6 +121,19 @@ def render_report(
         )
         lines.append(f"| {row['model']} | {cells} |")
     lines.append("")
+    if answers:
+        lines.append("## 回答摘录（每个模型 1 条）")
+        lines.append("")
+        shown: set[str] = set()
+        for row in answers:
+            model = str(row.get("model"))
+            if model in shown:
+                continue
+            shown.add(model)
+            lines.append(
+                f"- **{model}**（`{row.get('case_id')}`）：{_excerpt(row.get('answer', ''))}"
+            )
+        lines.append("")
     lines.append("## 主要失败聚类")
     lines.append("")
     if failures:
@@ -100,22 +155,26 @@ def render_report(
     lines.append("## 方法与局限")
     lines.append("")
     lines.append(
-        "- 本报告由 Planner → Case Designer → Evaluator → Analyst → Reporter "
-        "五个 Agent 顺序协作生成，每一步的输入/输出/耗时记录在 `task_ledger.jsonl`。"
+        "- 本报告由 Planner → Case Designer → Responder → Evaluator → Analyst → "
+        "Reporter 六个 Agent 顺序协作生成，每一步的输入/输出/耗时记录在 `task_ledger.jsonl`。"
+    )
+    lines.append(
+        "- Evaluator 只依据 Responder 采集到的回答打分，禁止按模型名称推断；"
+        "延迟、token 与约束判定由代码计算，不采信模型自报的数字。"
     )
     if mode == "mock":
         lines.append(
-            "- 当前为 mock 模式：候选模型的画像与分数是**合成数据**，只用于演示流水线，"
-            "**不代表任何真实模型的性能**；真实结论必须用 `--mode real` 重新评测。"
+            "- 当前为 mock 模式：候选模型的画像、回答文本与分数都是**合成数据**，"
+            "只用于演示流水线，**不代表任何真实模型的性能**；真实结论必须用 `--mode real` 重新评测。"
         )
         lines.append(
-            "- 评测采用规则化的 1–5 分打分；真实模式可切换为 LLM-as-judge，但仍需人工抽检与"
+            "- 评测采用规则化的 1–5 分打分；真实模式切换为 LLM-as-judge，但仍需人工抽检与"
             "标注校准，避免位置偏差与自洽偏差。"
         )
     else:
         lines.append(
-            "- 当前为 real 模式：分数由真实 API 按维度打分；模型延迟与成本字段是配置值/调用日志，"
-            "**实际账单以服务商控制台为准**。"
+            "- 当前为 real 模式：回答、耗时与 token 来自真实调用；成本由配置单价×实测 token 计算，"
+            "单价需自行维护，**实际账单以服务商控制台为准**。"
         )
         lines.append(
             "- LLM-as-judge 存在位置偏差与自洽偏差，需人工抽检；本报告是选型初筛，不是采购依据。"

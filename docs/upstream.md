@@ -27,10 +27,10 @@
 | 维度 | 上游 | 本项目 |
 | --- | --- | --- |
 | 业务场景 | 通用网页/文件/代码任务（Magentic-One）；市场研究、股票分析等示例（CrewAI） | 企业大模型选型评测：场景 → 计划 → 用例 → 打分 → 归因 → 报告 |
-| 角色 | WebSurfer / FileSurfer / Coder / ComputerTerminal | Planner / CaseDesigner / Evaluator / Analyst / Reporter |
-| 编排 | 动态选择下一个 Agent + 进度台账 | 固定五步顺序编排 + 任务台账（可复现优先） |
+| 角色 | WebSurfer / FileSurfer / Coder / ComputerTerminal | Planner / CaseDesigner / Responder / Evaluator / Analyst / Reporter |
+| 编排 | 动态选择下一个 Agent + 进度台账 | 固定六步顺序编排 + 任务台账（可复现优先） |
 | 执行 | 依赖 AutoGen / CrewAI 运行时 | 纯 Python 最小实现，无框架依赖；mock 可离线跑 |
-| 输出 | 任务结果 | `report.md` + `summary.csv` + `evaluations.csv` + `run.json` + 图表 |
+| 输出 | 任务结果 | `report.md` + `answers.csv` + `summary.csv` + `evaluations.csv` + `run.json` + 图表 |
 | 评测数据 | 无固定评测集 | YAML 场景 + 四类用例模板 + 可替换的真实 API |
 
 ## 3. 没有复制什么
@@ -43,7 +43,7 @@
 
 如果要在报告或简历中描述本项目，建议写：
 
-> 参考 Microsoft AutoGen 的 Magentic-One（Orchestrator + 任务台账 + 专家 Agent）与 CrewAI 的 sequential crew 分工模式，独立实现了一个面向企业大模型选型评测的五 Agent 流水线；业务场景、数据结构与实现均为自写，mock 模式可离线复现。
+> 参考 Microsoft AutoGen 的 Magentic-One（Orchestrator + 任务台账 + 专家 Agent）与 CrewAI 的 sequential crew 分工模式，独立实现了一个面向企业大模型选型评测的六 Agent 流水线；业务场景、数据结构与实现均为自写，mock 模式可离线复现。
 
 不要写「基于 AutoGen 开发」或「CrewAI 项目」——这会让人误以为是 fork 或二次开发。准确的说法是「借鉴编排思想，独立实现」。
 

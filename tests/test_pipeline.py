@@ -45,9 +45,19 @@ class PipelineTest(unittest.TestCase):
             self.assertTrue((result.run_dir / "task_ledger.jsonl").exists())
             self.assertTrue((result.run_dir / "evaluations.csv").exists())
             self.assertTrue((result.run_dir / "summary.csv").exists())
+            self.assertTrue((result.run_dir / "answers.csv").exists())
             payload = json.loads((result.run_dir / "run.json").read_text(encoding="utf-8"))
             self.assertEqual(len(payload["analysis"]["summaries"]), len(scenario.models))
             self.assertEqual(len(payload["evaluations"]), len(scenario.models) * scenario.n_cases)
+            # Every case must be actually answered by every candidate before scoring.
+            self.assertEqual(len(payload["answers"]), len(scenario.models) * scenario.n_cases)
+            answered = {(row["case_id"], row["model"]) for row in payload["answers"]}
+            scored = {(row["case_id"], row["model"]) for row in payload["evaluations"]}
+            self.assertEqual(answered, scored)
+            for row in payload["answers"]:
+                self.assertTrue(row["answer"].strip())
+            for row in payload["analysis"]["summaries"]:
+                self.assertIn("tokens_per_case", row)
             model_names = [m.name for m in scenario.models]
             self.assertIn(payload["analysis"]["recommendation"], model_names)
             for row in payload["evaluations"]:
@@ -75,7 +85,7 @@ class PipelineTest(unittest.TestCase):
             self.assertFalse(by_model["mock-quality"]["meets_constraints"])
             self.assertEqual(result.analysis["recommendation"], "mock-balanced")
 
-    def test_ledger_has_five_steps(self):
+    def test_ledger_has_six_steps(self):
         with tempfile.TemporaryDirectory() as tmp:
             _, result = self._run(Path(tmp))
             records = [
@@ -85,7 +95,14 @@ class PipelineTest(unittest.TestCase):
             ]
             self.assertEqual(
                 [record["agent"] for record in records],
-                ["planner", "case_designer", "evaluator", "analyst", "reporter"],
+                [
+                    "planner",
+                    "case_designer",
+                    "responder",
+                    "evaluator",
+                    "analyst",
+                    "reporter",
+                ],
             )
             self.assertTrue(all(record["status"] == "ok" for record in records))
 

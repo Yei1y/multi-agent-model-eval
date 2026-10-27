@@ -6,11 +6,13 @@ from .case_designer import CaseDesignerAgent
 from .evaluator import EvaluatorAgent
 from .planner import PlannerAgent
 from .reporter import ReporterAgent
+from .responder import ResponderAgent
 
 __all__ = [
     "BaseAgent",
     "PlannerAgent",
     "CaseDesignerAgent",
+    "ResponderAgent",
     "EvaluatorAgent",
     "AnalystAgent",
     "ReporterAgent",

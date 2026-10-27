@@ -24,5 +24,7 @@ class ReporterAgent(BaseAgent):
             analysis=payload["analysis"],
             run_id=payload["run_id"],
             mode=payload.get("mode", "mock"),
+            answers=payload.get("answers"),
+            measurements=payload.get("measurements"),
         )
         return {"report_markdown": markdown}

@@ -52,13 +52,20 @@ def main() -> int:
         chart_path=ROOT / args.chart,
     )
     result = orchestrator.run()
-    usage = getattr(llm, "usage", [])
+    usage = list(getattr(llm, "usage", []))
+    for client in orchestrator.candidate_llms.values():
+        usage.extend(getattr(client, "usage", []))
     summary = {
         "run_dir": str(result.run_dir),
         "report": str(result.report_path),
         "recommendation": result.analysis["recommendation"],
         "rationale": result.analysis["rationale"],
         "scores": {row["model"]: row["overall"] for row in result.analysis["summaries"]},
+        "answers": len(result.answers),
+        "measured_latency_ms": {
+            name: measurement.get("latency_ms")
+            for name, measurement in result.measurements.items()
+        },
         "total_tokens": sum(int(row.get("total_tokens", 0)) for row in usage),
         "total_llm_duration_ms": round(
             sum(float(row.get("duration_ms", 0.0)) for row in usage), 1
