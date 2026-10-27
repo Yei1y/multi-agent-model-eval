@@ -18,21 +18,23 @@
 | --- | --- | --- | --- | --- |
 | `PlannerAgent` | `scenario` | `plan` | 维度非空、权重和 = 1.0 | 抛错，台账记 `error` |
 | `CaseDesignerAgent` | `scenario`、`plan` | `cases` | 列表非空、每条有 id/category | 同上 |
-| `EvaluatorAgent` | `scenario`、`plan`、`cases` | `evaluations` | 列表非空、每条有 scores | 同上 |
-| `AnalystAgent` | `scenario`、`plan`、`cases`、`evaluations` | `analysis` | summaries 与 recommendation 非空 | 同上 |
-| `ReporterAgent` | `scenario`、`plan`、`analysis`、`run_id` | `report_markdown` | 字符串长度 ≥ 50 | 同上 |
+| `ResponderAgent` | `scenario`、`cases` | `answers` | real 模式每个候选都能建连；空回答视为失败 | 同上 |
+| `EvaluatorAgent` | `scenario`、`plan`、`cases`、`answers` | `evaluations` | 覆盖全部 (case, model)；维度 key 必须齐全且在 1–5 | 同上，缺模型时先重问一次 |
+| `AnalystAgent` | `scenario`、`plan`、`cases`、`evaluations`、`measurements` | `analysis` | summaries 与 recommendation 非空 | 同上 |
+| `ReporterAgent` | `scenario`、`plan`、`analysis`、`answers`、`measurements`、`run_id` | `report_markdown` | 字符串长度 ≥ 50 | 同上 |
 
 所有 Agent 继承 `src/agents/base.py::BaseAgent`，共享同一个 `BaseLLM` 接口。Agent 只负责「组装 payload + 校验输出」，不关心底层是 mock 还是真实模型。
 
 ## 3. 编排流程
 
-`src/orchestrator.py::Orchestrator.run()` 顺序执行五步：
+`src/orchestrator.py::Orchestrator.run()` 顺序执行六步：
 
 ```text
 load scenario
   → PlannerAgent.run       → plan
   → CaseDesignerAgent.run  → cases
-  → EvaluatorAgent.run     → evaluations
+  → ResponderAgent.run     → answers（候选模型真实作答；mock 模式为合成文本）
+  → EvaluatorAgent.run     → evaluations（依据回答打分）
   → AnalystAgent.run       → analysis
   → ReporterAgent.run      → report_markdown
   → 落盘 + 出图
@@ -47,6 +49,7 @@ load scenario
 ```json
 {"step": "planner", "agent": "planner", "status": "ok", "started_at": "2026-10-24T11:49:13", "duration_ms": 0.03, "summary": "5 dimensions, case mix {'normal': 6, 'edge': 6, 'adversarial': 6, 'multi_turn': 6}"}
 {"step": "case_designer", "agent": "case_designer", "status": "ok", "started_at": "2026-10-24T11:49:13", "duration_ms": 0.13, "summary": "24 cases"}
+{"step": "responder", "agent": "responder", "status": "ok", "started_at": "2026-10-24T11:49:13", "duration_ms": 0.66, "summary": "72 answers, models=3, measured=0"}
 {"step": "evaluator", "agent": "evaluator", "status": "ok", "started_at": "2026-10-24T11:49:13", "duration_ms": 1.31, "summary": "72 evaluations"}
 {"step": "analyst", "agent": "analyst", "status": "ok", "started_at": "2026-10-24T11:49:13", "duration_ms": 0.2, "summary": "recommendation=mock-balanced, models=3"}
 {"step": "reporter", "agent": "reporter", "status": "ok", "started_at": "2026-10-24T11:49:13", "duration_ms": 5.84, "summary": "2053 chars"}
@@ -66,9 +69,14 @@ runs/<run_id>/
 ├── report.md            # 中文选型报告（Reporter 用模板渲染）
 ├── summary.csv          # 模型级汇总：综合分/维度分/通过率/成本/延迟/约束
 ├── evaluations.csv      # 用例 × 模型明细：每维度分、加权分、是否过线
-├── task_ledger.jsonl    # 五步台账
-└── llm_usage.json       # 真实模式逐次 token/耗时（mock 模式为空）
+├── task_ledger.jsonl    # 六步台账
+├── answers.csv          # 候选模型逐条回答 + 耗时 + 输入/输出 token
+└── llm_usage.json       # 逐次 token/耗时（real 模式含候选调用；mock 模式为空）
 ```
+
+成本不在 answers 里凭空出现：`src/measurements.py` 用 answers 的输入/输出 token 乘场景单价
+（`price_input_per_1k` / `price_output_per_1k`）算出单条成本、每千 token 成本与总成本；
+单价留空时这三项为 `None`，报告如实显示"—"。
 
 `docs/assets/model_scores.png` 由 `src/charts.py` 生成，固定路径覆盖更新，方便 README 引用；历史 run 的原始数据不受影响。真实运行建议用 `--chart runs/real_smoke_chart.png`，避免覆盖 mock 图。Reporter 用模板渲染而不是再调一次模型，保证表格数字与 CSV 一致，也减少一次 API 费用。
 
@@ -85,10 +93,11 @@ scenario ───► │ BaseLLM 接口 │ ───► Agent.run
    (profile + seed)         (/chat/completions, JSON, retry)
 ```
 
-- `MockLLM` 为每个 Agent 维护独立 `random.Random(seed + index)`，避免不同步骤互相影响随机序列；同一 seed 的输出可逐字节复现。
-- `MockLLM.structured()` 不调用网络，按 Agent 名分派到 `src/mock_engine.py` 的确定性函数。
-- `OpenAICompatibleLLM` 用标准库 `urllib`，不额外依赖 SDK；`temperature=0.1`、`response_format={"type":"json_object"}`、`max_tokens=8192`，最多重试 3 次（2 次重试）。超时默认 180 s，并捕获 `ConnectionError` / `RemoteDisconnected` 后重试。
-- 真实 smoke（2026-10-24）：火山方舟 `doubao-seed-2-1-lite`，1 模型 × 8 条用例，9,055 tokens，46.7 s。火山方舟可设 `LLM_THINKING=disabled` 关闭思考，避免单次调用超过 60 s；不设时该模型会返回 `reasoning_content`，延迟与 token 都会明显上升。
+- `MockLLM` 为每个 Agent 维护独立 `random.Random(seed + index)`，避免不同步骤互相影响随机序列；同一 seed 的输出可逐字节复现。`responder` 刻意排在 `_AGENTS` 末尾，插在中间会改变后续 Agent 的种子，把已记录的全部 mock 结论改掉。
+- `MockLLM.structured()` 不调用网络，按 Agent 名分派到 `src/mock_engine.py` 的确定性函数。mock 的回答只是文本占位，不参与打分，也不产生耗时/token。
+- `OpenAICompatibleLLM` 用标准库 `urllib`，不额外依赖 SDK；两种调用形状：`structured()`（JSON 强制、`temperature=0.1`）与 `chat()`（自由文本，用于候选模型作答）。最多重试 3 次（2 次重试），超时默认 180 s，并捕获 `ConnectionError` / `RemoteDisconnected`。
+- 候选模型各自建连：`build_candidate_llms()` 按 YAML 的 `base_url_env` / `api_key_env` / `model_id`（支持 `env:NAME`）创建客户端，缺环境变量时在运行前 fail fast，避免跑了一半才发现没配。候选人调用与工作流调用的 usage 会合并进同一个 `llm_usage.json`。
+- 真实 smoke（2026-10-24）：火山方舟 `doubao-seed-2-1-lite`，1 模型 × 8 条用例，9,055 tokens，46.7 s。**该次运行早于 Responder 补丁，候选模型未被调用**，其分数不是实测成绩。火山方舟可设 `LLM_THINKING=disabled` 关闭思考，避免单次调用超过 60 s。
 
 ## 7. 设计取舍
 
@@ -103,6 +112,9 @@ scenario ───► │ BaseLLM 接口 │ ───► Agent.run
 
 **为什么通过线是 3.8？**
 这是演示值：电商场景下 mock-fast 的加权分约 3.86，3.8 能暴露它在高难度对抗用例上的失败，又不至于让所有模型全军覆没。真实项目应根据业务容忍度设定，并在 `results.md` 中记录变更。
+
+**为什么数字都由代码算，而不是让 Analyst 报？**
+早期版本让 LLM 填延迟、成本与"是否满足约束"，实测出现过把 0–1 的通过率写成 `10000%` 的事故。现在加权分由 `EvaluatorAgent._finalize` 重算，延迟/token 由 `src/measurements.py` 统计，约束判定由 `AnalystAgent._apply_measurements` 覆盖，推荐若与约束冲突还会被 `_enforce_constraints` 纠正。代价是放弃了"让模型自己总结数字"的灵活性，换来报告、CSV、图表三者永远一致。
 
 ## 8. 扩展方式
 
@@ -123,9 +135,9 @@ scenario ───► │ BaseLLM 接口 │ ───► Agent.run
 | 维度 | Magentic-One (AutoGen) | 本项目 |
 | --- | --- | --- |
 | 任务类型 | 开放式网页/文件/代码任务 | 封闭式模型选型评测 |
-| 编排 | Orchestrator 动态选择下一个 Agent，带进度台账 | 固定五步顺序编排，带任务台账 |
-| 专家角色 | WebSurfer / FileSurfer / Coder / ComputerTerminal | Planner / CaseDesigner / Evaluator / Analyst / Reporter |
-| 终止条件 | 进度检查 + 任务完成判断 | 五步完成即结束；失败即终止 |
+| 编排 | Orchestrator 动态选择下一个 Agent，带进度台账 | 固定六步顺序编排，带任务台账 |
+| 专家角色 | WebSurfer / FileSurfer / Coder / ComputerTerminal | Planner / CaseDesigner / Responder / Evaluator / Analyst / Reporter |
+| 终止条件 | 进度检查 + 任务完成判断 | 六步完成即结束；失败即终止 |
 | 输出 | 任务结果 | 选型报告 + CSV + JSON |
 
 保留的共同点：**角色分工、任务台账、每一步可追溯**。这正是本项目从上游借鉴的核心，而不是复制具体实现。
@@ -137,6 +149,9 @@ scenario ───► │ BaseLLM 接口 │ ───► Agent.run
 | `plan dimension weights must sum to 1.0` | YAML 权重没归一化 | 调整权重或改 `PlannerAgent` 的归一化逻辑 |
 | `sum(category_mix) must equal n_cases` | 用例配比与总数不一致 | 改 YAML 的 `category_mix` 或 `n_cases` |
 | `real mode requires LLM_BASE_URL...` | 环境变量缺失 | 设三个 env，或改用 `--mode mock` |
+| `candidate model X is missing base_url/api_key/model_id` | 候选端点没配 | 按提示设置 YAML 中 `base_url_env` / `api_key_env` 指向的变量，或把 `model_id` 写成 `env:NAME` |
+| `evaluations incomplete: N of M ... missing` | judge 漏给某个模型的评分 | 已自动重问一次；仍缺就换 judge 或收紧提示词 |
+| `evaluation ... is missing dimension 'x'` | judge 改写了维度 key | 代码不做静默补 0；检查 plan 的 key 与提示词 |
 | `Remote end closed connection` / 超时 | 模型思考时间长、连接被远端重置 | 设 `LLM_THINKING=disabled`；超时已设 180 s；代码会重试 2 次 |
 | 真实模式 JSON 解析失败 | 端点不支持 `response_format`，或返回带 Markdown 围栏 | 先删 `response_format`，在 prompt 中强调「只输出 JSON」；查看 `task_ledger.jsonl` 定位步骤 |
 | 报告通过率显示 `10000%` | LLM 把通过率返回成 0–100 而不是 0–1 | `AnalystAgent._normalize_units` 已归一化；新增单位时保持该契约 |

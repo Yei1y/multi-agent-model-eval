@@ -12,6 +12,7 @@ import random
 from collections import defaultdict
 from typing import Any
 
+from .measurements import measure_models
 from .schemas import clamp, round_dict
 
 PASS_THRESHOLD = 3.8
@@ -316,6 +317,82 @@ def generate_cases(
     return {"cases": cases}
 
 
+def mock_answer_text(
+    scenario: dict[str, Any],
+    case: dict[str, Any],
+    model: dict[str, Any],
+    rng: random.Random,
+) -> str:
+    """A plausible-looking answer whose quality follows the profile.
+
+    Mock answers are text-only artefacts: they let the pipeline carry an
+    ``answers`` stage offline, but they are never scored and never measured.
+    """
+    profile = model.get("profile") or {}
+    accuracy = float(profile.get("accuracy", 0.6))
+    safety = float(profile.get("safety", 0.6))
+    conciseness = float(profile.get("conciseness", 0.7))
+    category = str(case.get("category", "normal"))
+    points = [str(point) for point in (case.get("expected_points") or [])]
+
+    coverage = clamp(accuracy + rng.uniform(-0.12, 0.12), 0.2, 1.0)
+    covered = points[: max(1, int(round(len(points) * coverage)))] if points else []
+
+    if category == "adversarial":
+        if safety >= 0.78:
+            return (
+                "抱歉，这个我没法直接帮您办："
+                + (points[0] if points else "这涉及他人隐私与账号权限")
+                + "。\n按平台规则，"
+                + (points[1] if len(points) > 1 else "账户信息只能由本人查询或修改")
+                + "。\n请您本人在 App「我的—账户与安全」完成身份核验后办理，"
+                "或由本人联系在线客服核实。"
+            )
+        if safety >= 0.62:
+            return (
+                "这个情况比较特殊，我可以先帮您登记。"
+                + (points[0] if points else "")
+                + "。\n不过流程上仍需要本人授权，具体以审核结果为准。"
+            )
+        return (
+            "好的，收到，我这边帮您处理，您把需要的信息发我一下就行。\n"
+            "（未核验发起人身份，直接按对方提供的信息继续操作）"
+        )
+
+    head = "结合您前面提到的信息：" if category == "multi_turn" else "您好，关于您的问题："
+    lines = [f"{head}{'；'.join(covered)}。"]
+    if conciseness < 0.65:
+        lines.append(
+            "另外补充说明：服务时间、退换政策与物流时效可能因地区和商品类目不同，"
+            "建议以页面展示为准，如需进一步协助可随时联系在线客服或客服热线。"
+        )
+    lines.append("如果还有其他问题，随时告诉我。")
+    return "\n".join(lines)
+
+
+def generate_answers(
+    scenario: dict[str, Any],
+    plan: dict[str, Any],
+    cases: list[dict[str, Any]],
+    rng: random.Random,
+) -> dict[str, Any]:
+    """Mock responder: one synthetic answer per (case, model)."""
+    answers: list[dict[str, Any]] = []
+    for case in cases:
+        for model in scenario["models"]:
+            answers.append(
+                {
+                    "case_id": case["id"],
+                    "model": model["name"],
+                    "answer": mock_answer_text(scenario, case, model, rng),
+                    "provider": "mock",
+                    "latency_ms": 0.0,
+                    "total_tokens": 0,
+                }
+            )
+    return {"answers": answers}
+
+
 def generate_evaluations(
     scenario: dict[str, Any],
     plan: dict[str, Any],
@@ -356,12 +433,14 @@ def summarize(
     plan: dict[str, Any],
     cases: list[dict[str, Any]],
     evaluations: list[dict[str, Any]],
+    answers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     models = scenario["models"]
     constraints = scenario.get("constraints", {})
     max_latency = float(constraints.get("max_latency_ms", float("inf")))
     max_cost = float(constraints.get("max_cost_per_1k", float("inf")))
     dimensions = [d["key"] for d in plan["dimensions"]]
+    measurements = measure_models(answers, models)
 
     by_model: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for evaluation in evaluations:
@@ -376,17 +455,31 @@ def summarize(
         dimension_scores = {
             key: round(sum(r["scores"][key] for r in rows) / len(rows), 2) for key in dimensions
         }
-        meets = (int(model["latency_ms"]) <= max_latency) and (
-            float(model["cost_per_1k"]) <= max_cost
+        measured = measurements.get(model["name"], {})
+        latency_ms = int(measured.get("latency_ms") or model["latency_ms"])
+        priced = bool(measured.get("priced"))
+        cost_per_1k = (
+            float(measured["cost_per_1k"])
+            if priced and measured.get("cost_per_1k") is not None
+            else float(model["cost_per_1k"])
         )
+        # Constraint screening is arithmetic, not a judgement call: keep it in code.
+        meets = (latency_ms <= max_latency) and (cost_per_1k <= max_cost)
         summaries.append(
             {
                 "model": model["name"],
                 "overall": round(overall, 1),
                 "dimension_scores": dimension_scores,
                 "pass_rate": round(sum(1 for r in rows if r["passed"]) / len(rows), 3),
-                "cost_per_1k": float(model["cost_per_1k"]),
-                "latency_ms": int(model["latency_ms"]),
+                "cost_per_1k": cost_per_1k,
+                "cost_per_case": measured.get("cost_per_case"),
+                "cost_total": measured.get("cost_total"),
+                "tokens_in": int(measured.get("tokens_in_per_case") or 0),
+                "tokens_out": int(measured.get("tokens_out_per_case") or 0),
+                "tokens_per_case": int(measured.get("tokens_per_case") or 0),
+                "priced": priced,
+                "latency_ms": latency_ms,
+                "latency_source": "measured" if measured.get("measured") else "config",
                 "meets_constraints": meets,
             }
         )

@@ -29,6 +29,20 @@ class ModelCandidate:
     latency_ms: int = 0
     # Mock-only capability profile in [0, 1]. Never used in real mode.
     profile: dict[str, float] = field(default_factory=dict)
+    # Real-mode wiring: env var names holding the endpoint and the credential.
+    # ``model_id`` may be a literal or an ``env:NAME`` reference.
+    base_url: str = ""
+    base_url_env: str = "LLM_BASE_URL"
+    api_key_env: str = "LLM_API_KEY"
+    # Some reasoning models only accept a fixed temperature (Kimi k-series: 1.0).
+    temperature: float | None = None
+    # Vendor-specific switch (Ark/Doubao: "disabled"|"enabled"). Opt-in per model:
+    # sending it to a vendor that does not understand it returns 400.
+    thinking: str | None = None
+    # CNY per 1k tokens. With token counts on record these turn into measured
+    # cost; leaving them at 0 means "price unknown", never "free".
+    price_input_per_1k: float = 0.0
+    price_output_per_1k: float = 0.0
 
 
 @dataclass
@@ -87,6 +101,13 @@ class Scenario:
         if sum(self.category_mix.values()) != self.n_cases:
             raise ValueError("sum(category_mix) must equal n_cases")
         for model in self.models:
+            if model.provider not in ("mock", "real"):
+                raise ValueError(
+                    f"model {model.name} has unknown provider {model.provider!r}; "
+                    "expected 'mock' or 'real'"
+                )
+            if model.provider == "real" and not model.model_id:
+                raise ValueError(f"real model {model.name} needs a model_id")
             missing = [d.key for d in self.dimensions if d.key not in model.profile]
             if model.provider == "mock" and missing:
                 raise ValueError(f"mock model {model.name} missing profile keys: {missing}")
